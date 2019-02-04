@@ -1,86 +1,103 @@
 #!/usr/bin/env python3
 #
-# An HTTP server that remembers your name (in a cookie)
-#
-# In this exercise, you'll create and read a cookie to remember the name
-# that the user submits in a form.  There are two things for you to do here:
-#
-# 1. Set the relevant fields of the cookie:  its value, domain, and max-age.
-#
-# 2. Read the cookie value into a variable.
+# A *bookmark server* or URI shortener.
 
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from http import cookies
-from urllib.parse import parse_qs
-from html import escape as html_escape
+import http.server
+import requests
+import os
+from urllib.parse import unquote, parse_qs
+
+memory = {}
 
 form = '''<!DOCTYPE html>
-<title>I Remember You</title>
-<p>
-{}
-<p>
+<title>Bookmark Server</title>
 <form method="POST">
-<label>What's your name again?
-<input type="text" name="yourname">
-</label>
-<br>
-<button type="submit">Tell me!</button>
+    <label>Long URI:
+        <input name="longuri">
+    </label>
+    <br>
+    <label>Short name:
+        <input name="shortname">
+    </label>
+    <br>
+    <button type="submit">Save it!</button>
 </form>
+<p>URIs I know about:
+<pre>
+{}
+</pre>
 '''
 
 
-class NameHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        # How long was the post data?
-        length = int(self.headers.get('Content-length', 0))
+def CheckURI(uri, timeout=5):
+    '''Check whether this URI is reachable, i.e. does it return a 200 OK?
+    
+    This function returns True if a GET request to uri returns a 200 OK, and
+    False if that GET request returns any other response, or doesn't return
+    (i.e. times out).
+    '''
+    try:
+        r = requests.get(uri, timeout=timeout)
+        # If the GET request returns, was it a 200 OK?
+        return r.status_code == 200
+    except requests.RequestException:
+        # If the GET request raised an exception, it's not OK.
+        return False
 
-        # Read and parse the post data
-        data = self.rfile.read(length).decode()
-        yourname = parse_qs(data)["yourname"][0]
 
-        # Create cookie.
-        c = cookies.SimpleCookie()
-
-        # 1. Set the fields of the cookie.
-        #    Give the cookie a value from the 'yourname' variable,
-        #    a domain (localhost), and a max-age.
-
-        # Send a 303 back to the root page, with a cookie!
-        self.send_response(303)  # redirect via GET
-        self.send_header('Location', '/')
-        self.send_header('Set-Cookie', c['yourname'].OutputString())
-        self.end_headers()
-
+class Shortener(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        # Default message if we don't know a name.
-        message = "I don't know you yet!"
+        # A GET request will either be for / (the root path) or for /some-name.
+        # Strip off the / and we have either empty string or a name.
+        name = unquote(self.path[1:])
 
-        # Look for a cookie in the request.
-        if 'cookie' in self.headers:
-            try:
-                # 2. Extract and decode the cookie.
-                #    Get the cookie from the headers and extract its value
-                #    into a variable called 'name'.
+        if name:
+            if name in memory:
+                # We know that name! Send a redirect to it.
+                self.send_response(303)
+                self.send_header('Location', memory[name])
+                self.end_headers()
+            else:
+                # We don't know that name! Send a 404 error.
+                self.send_response(404)
+                self.send_header('Content-type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write("I don't know '{}'.".format(name).encode())
+        else:
+            # Root path. Send the form.
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            # List the known associations in the form.
+            known = "\n".join("{} : {}".format(key, memory[key])
+                              for key in sorted(memory.keys()))
+            self.wfile.write(form.format(known).encode())
 
-                # Craft a message, escaping any HTML special chars in name.
-                message = "Hey there, " + html_escape(name)
-            except (KeyError, cookies.CookieError) as e:
-                message = "I'm not sure who you are!"
-                print(e)
+    def do_POST(self):
+        # Decode the form data.
+        length = int(self.headers.get('Content-length', 0))
+        body = self.rfile.read(length).decode()
+        params = parse_qs(body)
+        longuri = params["longuri"][0]
+        shortname = params["shortname"][0]
 
-        # First, send a 200 OK response.
-        self.send_response(200)
+        if CheckURI(longuri):
+            # This URI is good!  Remember it under the specified name.
+            memory[shortname] = longuri
 
-        # Then send headers.
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        self.end_headers()
-
-        # Send the form with the message in it.
-        mesg = form.format(message)
-        self.wfile.write(mesg.encode())
-
+            # Serve a redirect to the form.
+            self.send_response(303)
+            self.send_header('Location', '/')
+            self.end_headers()
+        else:
+            # Didn't successfully fetch the long URI.
+            self.send_response(404)
+            self.send_header('Content-type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(
+                "Couldn't fetch URI '{}'. Sorry!".format(longuri).encode())
 
 if __name__ == '__main__':
-    server_address = ('', 8080)
-    httpd = HTTPServer(server_address, NameHandler)
+    server_address = ('', int(os.environ.get('PORT', '8000')))
+    httpd = http.server.HTTPServer(server_address, Shortener)
     httpd.serve_forever()
