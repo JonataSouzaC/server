@@ -59,6 +59,6 @@ class ThreadHTTPServer(ThreadingMixIn, http.server.HTTPServer):
     pass
 
 if __name__ == '__main__':
-    address = ('', 8000)
+    address = ('', 8080)
     httpd = ThreadHTTPServer(address, Parallelometer)
     httpd.serve_forever()
