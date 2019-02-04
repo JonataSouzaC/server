@@ -1,103 +1,58 @@
 #!/usr/bin/env python3
 #
-# A *bookmark server* or URI shortener.
+# An HTTP server that's a message board.
 
-import http.server
-import requests
-import os
-from urllib.parse import unquote, parse_qs
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs
 
-memory = {}
+memory = []
 
 form = '''<!DOCTYPE html>
-<title>Bookmark Server</title>
-<form method="POST">
-    <label>Long URI:
-        <input name="longuri">
-    </label>
+  <title>Message Board</title>
+  <form method="POST">
+    <textarea name="message"></textarea>
     <br>
-    <label>Short name:
-        <input name="shortname">
-    </label>
-    <br>
-    <button type="submit">Save it!</button>
-</form>
-<p>URIs I know about:
-<pre>
+    <button type="submit">Post it!</button>
+  </form>
+  <pre>
 {}
-</pre>
+  </pre>
 '''
 
 
-def CheckURI(uri, timeout=5):
-    '''Check whether this URI is reachable, i.e. does it return a 200 OK?
-    
-    This function returns True if a GET request to uri returns a 200 OK, and
-    False if that GET request returns any other response, or doesn't return
-    (i.e. times out).
-    '''
-    try:
-        r = requests.get(uri, timeout=timeout)
-        # If the GET request returns, was it a 200 OK?
-        return r.status_code == 200
-    except requests.RequestException:
-        # If the GET request raised an exception, it's not OK.
-        return False
-
-
-class Shortener(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        # A GET request will either be for / (the root path) or for /some-name.
-        # Strip off the / and we have either empty string or a name.
-        name = unquote(self.path[1:])
-
-        if name:
-            if name in memory:
-                # We know that name! Send a redirect to it.
-                self.send_response(303)
-                self.send_header('Location', memory[name])
-                self.end_headers()
-            else:
-                # We don't know that name! Send a 404 error.
-                self.send_response(404)
-                self.send_header('Content-type', 'text/plain; charset=utf-8')
-                self.end_headers()
-                self.wfile.write("I don't know '{}'.".format(name).encode())
-        else:
-            # Root path. Send the form.
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            # List the known associations in the form.
-            known = "\n".join("{} : {}".format(key, memory[key])
-                              for key in sorted(memory.keys()))
-            self.wfile.write(form.format(known).encode())
-
+class MessageHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        # Decode the form data.
+        # How long was the message?
         length = int(self.headers.get('Content-length', 0))
-        body = self.rfile.read(length).decode()
-        params = parse_qs(body)
-        longuri = params["longuri"][0]
-        shortname = params["shortname"][0]
 
-        if CheckURI(longuri):
-            # This URI is good!  Remember it under the specified name.
-            memory[shortname] = longuri
+        # Read and parse the message
+        data = self.rfile.read(length).decode()
+        message = parse_qs(data)["message"][0]
 
-            # Serve a redirect to the form.
-            self.send_response(303)
-            self.send_header('Location', '/')
-            self.end_headers()
-        else:
-            # Didn't successfully fetch the long URI.
-            self.send_response(404)
-            self.send_header('Content-type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(
-                "Couldn't fetch URI '{}'. Sorry!".format(longuri).encode())
+        # Escape HTML tags in the message so users can't break world+dog.
+        message = message.replace("<", "&lt;")
+
+        # Store it in memory.
+        memory.append(message)
+
+        # Send a 303 back to the root page
+        self.send_response(303)  # redirect via GET
+        self.send_header('Location', '/')
+        self.end_headers()
+
+    def do_GET(self):
+        # First, send a 200 OK response.
+        self.send_response(200)
+
+        # Then send headers.
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+
+        # Send the form with the messages in it.
+        mesg = form.format("\n".join(memory))
+        self.wfile.write(mesg.encode())
 
 if __name__ == '__main__':
-    server_address = ('', int(os.environ.get('PORT', '8000')))
-    httpd = http.server.HTTPServer(server_address, Shortener)
+    server_address = ('', 8000)
+    httpd = HTTPServer(server_address, MessageHandler)
     httpd.serve_forever()
