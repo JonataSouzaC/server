@@ -1,64 +1,86 @@
 #!/usr/bin/env python3
-# A demonstration that your browser opens many requests to a server.
+#
+# An HTTP server that remembers your name (in a cookie)
+#
+# In this exercise, you'll create and read a cookie to remember the name
+# that the user submits in a form.  There are two things for you to do here:
+#
+# 1. Set the relevant fields of the cookie:  its value, domain, and max-age.
+#
+# 2. Read the cookie value into a variable.
 
-import http.server
-from socketserver import ThreadingMixIn
-import threading
-import time
-import random
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from http import cookies
+from urllib.parse import parse_qs
+from html import escape as html_escape
 
-# HTML main page. This page has 16 iframes, each of which causes
-# the browser to send an additional request to this server.
-# Each iframe will display the number of currently active requests.
-html = '''<!DOCTYPE html>
-<title>Things!</title>
-<style>iframe { width: 23%; border: 0 }</style>
-<iframe src="/frame0"></iframe> <iframe src="/frame1"></iframe>
-<iframe src="/frame2"></iframe> <iframe src="/frame3"></iframe>
-<iframe src="/frame4"></iframe> <iframe src="/frame5"></iframe>
-<iframe src="/frame6"></iframe> <iframe src="/frame7"></iframe>
-<iframe src="/frame8"></iframe> <iframe src="/frame9"></iframe>
-<iframe src="/framea"></iframe> <iframe src="/frameb"></iframe>
-<iframe src="/framec"></iframe> <iframe src="/framed"></iframe>
-<iframe src="/framee"></iframe> <iframe src="/framef"></iframe>
+form = '''<!DOCTYPE html>
+<title>I Remember You</title>
+<p>
+{}
+<p>
+<form method="POST">
+<label>What's your name again?
+<input type="text" name="yourname">
+</label>
+<br>
+<button type="submit">Tell me!</button>
+</form>
 '''
 
-# Track the number of requests that are in progress.
-# This variable will get +1 every time a handler starts processing
-# a request, and -1 every time it finishes.
-inflight = 0
 
-# To protect the inflight variable from being changed from multiple
-# request handlers at once, we need to use a lock.
-lock = threading.Lock()
+class NameHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        # How long was the post data?
+        length = int(self.headers.get('Content-length', 0))
 
+        # Read and parse the post data
+        data = self.rfile.read(length).decode()
+        yourname = parse_qs(data)["yourname"][0]
 
-class Parallelometer(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        global inflight, lock
-        with lock:
-            # We're starting to handle a request.
-            inflight += 1
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html')
+        # Create cookie.
+        c = cookies.SimpleCookie()
+
+        # 1. Set the fields of the cookie.
+        #    Give the cookie a value from the 'yourname' variable,
+        #    a domain (localhost), and a max-age.
+
+        # Send a 303 back to the root page, with a cookie!
+        self.send_response(303)  # redirect via GET
+        self.send_header('Location', '/')
+        self.send_header('Set-Cookie', c['yourname'].OutputString())
         self.end_headers()
-        if self.path.startswith('/frame'):
-            # This request is for iframe contents.
-            time.sleep(random.random())  # Slow down by 0-1 seconds.
-            self.wfile.write('{} requests in flight'.format(inflight).encode())
-        else:
-            # This request is for the main page.
-            self.wfile.write(html.encode())
-            self.wfile.flush()
-        with lock:
-            # We're done handling a request.
-            inflight -= 1
 
+    def do_GET(self):
+        # Default message if we don't know a name.
+        message = "I don't know you yet!"
 
-class ThreadHTTPServer(ThreadingMixIn, http.server.HTTPServer):
-    pass
+        # Look for a cookie in the request.
+        if 'cookie' in self.headers:
+            try:
+                # 2. Extract and decode the cookie.
+                #    Get the cookie from the headers and extract its value
+                #    into a variable called 'name'.
+
+                # Craft a message, escaping any HTML special chars in name.
+                message = "Hey there, " + html_escape(name)
+            except (KeyError, cookies.CookieError) as e:
+                message = "I'm not sure who you are!"
+                print(e)
+
+        # First, send a 200 OK response.
+        self.send_response(200)
+
+        # Then send headers.
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+
+        # Send the form with the message in it.
+        mesg = form.format(message)
+        self.wfile.write(mesg.encode())
+
 
 if __name__ == '__main__':
-    address = ('', 8080)
-    httpd = ThreadHTTPServer(address, Parallelometer)
+    server_address = ('', 8080)
+    httpd = HTTPServer(server_address, NameHandler)
     httpd.serve_forever()
